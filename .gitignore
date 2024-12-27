@@ -1,0 +1,9 @@
+# Exclude BLT subfolder
+bpe_vs_blt_log_vec/blt/
+
+# Exclude config file
+bpe_vs_blt_log_vec/config.json
+# bpe_vs_blt_log_vec/tokenizers/
+
+# Exclude DuckDB
+*.duckdb
