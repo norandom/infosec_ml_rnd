@@ -26,34 +26,27 @@ def get_config_path():
 def get_db_name(mode='full', message_count=None):
     """Get database name based on mode and message count"""
     if mode == 'test':
-        return f'embeddings_test_{message_count}.duckdb'
-    elif mode == 'test_similarity':
-        return f'embeddings_test_sim_{message_count}.duckdb'
+        return f'test_{message_count}_messages.duckdb'
     else:
         return 'embeddings_1k.duckdb'
 
-def init_models_and_db(mode='full', message_count=None):
+def init_models_and_db(mode='full', message_count=None, linformer_only=False):
     """Initialize models and database connection"""
     # Load configuration and BLT library
     config_path = get_config_path()
-    hf_token, blt_dir, _ = load_config(config_path)
-    load_blt_lib(blt_dir)
     
-    # Initialize BLT model
-    model = create_blt_model(model_dim=1024, verbose=False)
+    if not linformer_only:
+        hf_token, blt_dir, _ = load_config(config_path)
+        load_blt_lib(blt_dir)
+        # Initialize BLT model
+        model = create_blt_model(model_dim=1024, verbose=False)
+    else:
+        model = None
+        
     tokenizer_path = Path("tokenizers/tokenizer.model")
     
     # Initialize DuckDB with mode-specific database
     con = duckdb.connect(get_db_name(mode, message_count), read_only=False)
-    
-    # Create table if not exists
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS message_embeddings (
-            message VARCHAR,
-            embedding_blt DOUBLE[],
-            embedding_bpe DOUBLE[]
-        )
-    """)
     
     return model, tokenizer_path, con
 
@@ -107,33 +100,32 @@ def find_similar_vectors(con, embeddings_blt, embeddings_bpe, similarity_thresho
     return {row[0] for row in similar_indices}
 
 def process_batch(messages, model, tokenizer_path):
-    """Process a batch of messages to create embeddings with performance metrics"""
+    """
+    Process a batch of messages to create embeddings with performance metrics
+    """
     blt_embeddings = []
     bpe_embeddings = []
     blt_times = []
     bpe_times = []
+
+    
+    tokenizer_path = Path(__file__).parent / "tokenizers" / "original"
+
     
     for msg in messages:
-        # Get BLT embedding with timing
-        blt_start = time.perf_counter()
+        # BLT embedding
+        start_time = time.time()
         blt_emb = get_text_embedding(msg, model, tokenizer_path)
-        blt_emb = blt_emb.detach().cpu().numpy()
-        blt_end = time.perf_counter()
-        blt_times.append(blt_end - blt_start)
-        
-        # Get Linformer embedding with timing
-        bpe_start = time.perf_counter()
-        bpe_emb = get_linformer_embedding(msg, tokenizer_path)
-        bpe_emb = bpe_emb.detach().cpu().numpy()
-        bpe_end = time.perf_counter()
-        bpe_times.append(bpe_end - bpe_start)
-        
+        blt_time = time.time() - start_time
+        blt_times.append(blt_time)
         blt_embeddings.append(blt_emb)
-        bpe_embeddings.append(bpe_emb)
         
-        # Clear CUDA cache periodically
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # Linformer embedding
+        start_time = time.time()
+        bpe_emb = get_linformer_embedding(msg)
+        bpe_time = time.time() - start_time
+        bpe_times.append(bpe_time)
+        bpe_embeddings.append(bpe_emb)
     
     return blt_embeddings, bpe_embeddings, blt_times, bpe_times
 
@@ -177,57 +169,54 @@ def vectorize_messages(batch_size=50, skip_similar=True, similarity_threshold=0.
 def test_vectorization(message_count=10):
     """Run a basic test vectorization"""
     print(f"Running basic test with {message_count} messages...")
+    
+    # Initialize models and database
     model, tokenizer_path, con = init_models_and_db(mode='test', message_count=message_count)
     
-    # Load messages
-    df = load_filtered_messages()
-    messages = df['filtered_message'].head(message_count).tolist()
+    # Get test messages
+    messages = load_filtered_messages()[:message_count]
     
     # Process messages
     blt_embeddings, bpe_embeddings, blt_times, bpe_times = process_batch(messages, model, tokenizer_path)
     
-    # Calculate performance metrics
-    avg_blt_time = sum(blt_times) / len(blt_times)
-    avg_bpe_time = sum(bpe_times) / len(bpe_times)
-    total_blt_time = sum(blt_times)
-    total_bpe_time = sum(bpe_times)
-    
+    # Print performance metrics
     print("\nPerformance Metrics:")
-    print(f"BLT Vectorization:")
-    print(f"  - Average time per message: {avg_blt_time:.4f} seconds")
-    print(f"  - Total time for {len(messages)} messages: {total_blt_time:.4f} seconds")
-    print(f"  - Messages per second: {len(messages)/total_blt_time:.2f}")
+    print("BLT Vectorization:")
+    print(f"  - Average time per message: {np.mean(blt_times):.4f} seconds")
+    print(f"  - Total time for {message_count} messages: {sum(blt_times):.4f} seconds")
+    print(f"  - Messages per second: {message_count/sum(blt_times):.2f}")
     
-    print(f"\nLinformer (BPE) Vectorization:")
-    print(f"  - Average time per message: {avg_bpe_time:.4f} seconds")
-    print(f"  - Total time for {len(messages)} messages: {total_bpe_time:.4f} seconds")
-    print(f"  - Messages per second: {len(messages)/total_bpe_time:.2f}")
+    print("\nLinformer (BPE) Vectorization:")
+    print(f"  - Average time per message: {np.mean(bpe_times):.4f} seconds")
+    print(f"  - Total time for {message_count} messages: {sum(bpe_times):.4f} seconds")
+    print(f"  - Messages per second: {message_count/sum(bpe_times):.2f}")
     
-    # Insert into DuckDB
+    # Store results in database
     for msg, blt_emb, bpe_emb in zip(messages, blt_embeddings, bpe_embeddings):
-        con.execute("""
-            INSERT INTO message_embeddings (message, embedding_blt, embedding_bpe)
-            VALUES (?, ?, ?)
-        """, [msg, blt_emb.tolist(), bpe_emb.tolist()])
-    
-    # Print sample results
-    print("\nSample from database:")
-    result = con.execute("""
-        SELECT 
-            message,
-            array_length(embedding_blt) as blt_dim,
-            array_length(embedding_bpe) as bpe_dim
-        FROM message_embeddings 
-        LIMIT 3
-    """).fetchall()
-    
-    for row in result:
-        print(f"\nMessage: {row[0][:100]}...")
-        print(f"BLT embedding dimensions: {row[1]}")
-        print(f"BPE embedding dimensions: {row[2]}")
+        # Convert numpy arrays to lists and ensure 1D shape
+        blt_list = blt_emb.tolist() if isinstance(blt_emb, np.ndarray) else blt_emb.cpu().numpy().squeeze().tolist()
+        bpe_list = bpe_emb.tolist() if isinstance(bpe_emb, np.ndarray) else bpe_emb.cpu().numpy().squeeze().tolist()
+        
+        # Ensure we have 1024-dim vectors
+        if len(blt_list) != 1024 or len(bpe_list) != 1024:
+            print(f"\nError: Vector dimensions mismatch")
+            print(f"BLT shape: {len(blt_list)}")
+            print(f"BPE shape: {len(bpe_list)}")
+            continue
+            
+        try:
+            con.execute("""
+                INSERT INTO message_embeddings (message, embedding_blt, embedding_bpe)
+                VALUES (?, ?, ?)
+            """, (msg, blt_list, bpe_list))
+        except Exception as e:
+            print(f"\nError storing vectors: {e}")
+            print(f"BLT shape: {np.array(blt_list).shape}")
+            print(f"BPE shape: {np.array(bpe_list).shape}")
+            raise
     
     con.close()
-    print("\nTest complete!")
+    print("\nTest complete! Results stored in database.")
 
 def test_vectorization_similarity(message_count=10):
     """Run a test vectorization with similarity detection"""
@@ -304,6 +293,75 @@ def test_vectorization_similarity(message_count=10):
     
     con.close()
     print("\nTest complete!")
+
+def test_update_linformer(message_count=2):
+    """Test updating only Linformer vectors for a few messages"""
+    print(f"\nTesting Linformer update with {message_count} messages...")
+    
+    # First create test data
+    test_vectorization(message_count)
+    
+    print("\nNow testing Linformer update...")
+    
+    # Connect to database with test mode
+    con = duckdb.connect(get_db_name(mode='test', message_count=message_count), read_only=False)
+    
+    try:
+        # Get sample messages with their existing BLT vectors
+        rows = con.execute(f"""
+            SELECT rowid, message, embedding_blt 
+            FROM message_embeddings 
+            LIMIT {message_count}
+        """).fetchall()
+        
+        print(f"Found {len(rows)} messages to update")
+        
+        # Process each message
+        for rowid, message, blt_vector in rows:
+            print(f"\nProcessing message {rowid}:")
+            print(f"Message preview: {message[:100]}...")
+            
+            # Generate new Linformer embedding
+            start_time = time.time()
+            linformer_emb = get_linformer_embedding(message)
+            process_time = time.time() - start_time
+            
+            print(f"Generated Linformer vector of shape: {linformer_emb.shape}")
+            print(f"Processing time: {process_time:.2f} seconds")
+            
+            try:
+                # Update only the Linformer vector
+                con.execute("""
+                    UPDATE message_embeddings 
+                    SET embedding_bpe = ?
+                    WHERE rowid = ?
+                """, (linformer_emb.tolist(), rowid))
+                
+                # Verify the update
+                result = con.execute("""
+                    SELECT 
+                        array_length(embedding_blt) as blt_len,
+                        array_length(embedding_bpe) as bpe_len
+                    FROM message_embeddings 
+                    WHERE rowid = ?
+                """, [rowid]).fetchone()
+                
+                if result:
+                    blt_len = result[0] if result[0] is not None else 0
+                    bpe_len = result[1] if result[1] is not None else 0
+                    print(f"Verified dimensions - BLT: {blt_len}, Linformer: {bpe_len}")
+                    if blt_len != 1024 or bpe_len != 1024:
+                        print("Warning: Vector dimensions are not 1024!")
+                else:
+                    print("Warning: Could not verify vector dimensions after update")
+                    
+            except Exception as e:
+                print(f"Error updating vector: {e}")
+            
+    finally:
+        con.close()
+    
+    print("\nTest complete! Linformer vectors updated successfully.")
 
 def load_config(config_path):
     """Load configuration from JSON file"""
@@ -410,24 +468,159 @@ def add_openai_embeddings(batch_size=50):
     con.close()
     print("\nProcessing complete!")
 
+def update_linformer_vectors(batch_size=50):
+    """
+    Update only the Linformer vectors in the database, keeping BLT vectors unchanged.
+    
+    Args:
+        batch_size (int): Number of messages to process at once
+    """
+    print("\nInitializing Linformer update...")
+    
+    # Check for state file
+    state_file = Path("linformer_update_state.txt")
+    last_processed_id = 0
+    if state_file.exists():
+        with open(state_file) as f:
+            try:
+                last_processed_id = int(f.read().strip())
+                print(f"Resuming from row ID: {last_processed_id}\n")
+            except ValueError:
+                print("Invalid state file, starting from beginning\n")
+    
+    # Initialize database connection only, skip BLT model
+    _, _, con = init_models_and_db(linformer_only=True)
+    
+    # Get total count for progress bar
+    total_rows = con.execute(f"""
+        SELECT COUNT(*) 
+        FROM message_embeddings 
+        WHERE rowid > {last_processed_id}
+    """).fetchone()[0]
+    print(f"Found {total_rows} messages to process\n")
+    
+    # Pre-initialize Linformer model to get GPU message before progress bar
+    dummy_message = "Initializing model"
+    _ = get_linformer_embedding(dummy_message)
+    print("")  # Add space after GPU message
+    
+    print("Starting update process...\n")
+    
+    try:
+        # Process in batches
+        for offset in tqdm(range(0, total_rows, batch_size), desc="Processing messages"):
+            # Get batch of messages
+            batch = con.execute(f"""
+                SELECT rowid, message 
+                FROM message_embeddings 
+                WHERE rowid > {last_processed_id}
+                ORDER BY rowid
+                LIMIT {batch_size}
+            """).fetchall()
+            
+            if not batch:
+                continue
+                
+            # Generate new Linformer embeddings
+            linformer_embeddings = []
+            for _, message in batch:
+                emb = get_linformer_embedding(message)
+                linformer_embeddings.append(emb.tolist())
+            
+            # Update database
+            for (rowid, _), emb in zip(batch, linformer_embeddings):
+                con.execute("""
+                    UPDATE message_embeddings 
+                    SET embedding_bpe = ?
+                    WHERE rowid = ?
+                """, (emb, rowid))
+                last_processed_id = rowid
+                
+            # Save state after each batch
+            with open(state_file, 'w') as f:
+                f.write(str(last_processed_id))
+                
+            # Commit after each batch
+            con.commit()
+            
+    except Exception as e:
+        print(f"\nError during update: {e}")
+        print(f"Last processed row ID: {last_processed_id}\n")
+        raise
+    finally:
+        con.close()
+        if total_rows == 0 or last_processed_id == con.execute("SELECT MAX(rowid) FROM message_embeddings").fetchone()[0]:
+            print("\nUpdate fully completed!\n")
+            # Clean up state file
+            if state_file.exists():
+                state_file.unlink()
+        else:
+            print(f"\nUpdate interrupted. Progress saved at row ID: {last_processed_id}")
+            print("Run the same command again to resume from this point.\n")
+
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--test', action='store_true', help='Run basic test mode')
-    parser.add_argument('--test-similarity', action='store_true', help='Run similarity test')
-    parser.add_argument('--message-count', type=int, default=10, help='Number of messages to process in test modes')
-    parser.add_argument('--batch-size', type=int, default=50, help='Batch size for processing')
-    parser.add_argument('--skip-similar', action='store_true', default=True, help='Skip messages that are similar to existing ones')
-    parser.add_argument('--similarity-threshold', type=float, default=0.99, help='Similarity threshold for skipping messages')
-    parser.add_argument('--add-openai-embeddings', action='store_true', help='Add OpenAI embeddings to existing messages')
+    parser = argparse.ArgumentParser(description='Process Sysmon logs with different embedding models')
+    
+    # Mode selection
+    parser.add_argument('--mode', 
+                      choices=['vectorize', 'test', 'test_similarity', 'update_linformer', 'test_update_linformer'],
+                      default='test',
+                      help='Operation mode:\n'
+                           'vectorize: Process all messages and create embeddings\n'
+                           'test: Run basic test on a small number of messages\n'
+                           'test_similarity: Test similarity detection\n'
+                           'update_linformer: Update Linformer vectors in database\n'
+                           'test_update_linformer: Test Linformer update on small dataset')
+    
+    # Processing parameters
+    parser.add_argument('--batch_size', 
+                      type=int, 
+                      default=50,
+                      help='Number of messages to process in each batch')
+    
+    # Test parameters
+    parser.add_argument('--message_count', 
+                      type=int, 
+                      default=10,
+                      help='Number of messages to process in test modes')
+    
+    # Optional parameters
+    parser.add_argument('--similarity_threshold',
+                      type=float,
+                      default=0.99,
+                      help='Threshold for considering vectors similar (0.0-1.0)')
+    
     args = parser.parse_args()
     
-    if args.test:
-        test_vectorization(args.message_count)
-    elif args.test_similarity:
-        test_vectorization_similarity(args.message_count)
-    elif args.add_openai_embeddings:
-        add_openai_embeddings(batch_size=args.batch_size)
-    else:
-        vectorize_messages(batch_size=args.batch_size, skip_similar=args.skip_similar, similarity_threshold=args.similarity_threshold)
+    try:
+        # Map modes to functions
+        mode_functions = {
+            'vectorize': lambda: vectorize_messages(
+                batch_size=args.batch_size,
+                similarity_threshold=args.similarity_threshold
+            ),
+            'test': lambda: test_vectorization(
+                message_count=args.message_count
+            ),
+            'test_similarity': lambda: test_vectorization_similarity(
+                message_count=args.message_count
+            ),
+            'update_linformer': lambda: update_linformer_vectors(
+                batch_size=args.batch_size
+            ),
+            'test_update_linformer': lambda: test_update_linformer(
+                message_count=args.message_count
+            )
+        }
+        
+        # Execute selected function
+        print(f"\nRunning in {args.mode} mode...")
+        mode_functions[args.mode]()
+        
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user")
+    except Exception as e:
+        print(f"\nError: {str(e)}")
+        raise
