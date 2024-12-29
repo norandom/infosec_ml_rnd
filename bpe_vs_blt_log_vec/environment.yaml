@@ -1,0 +1,29 @@
+name: ble-env
+channels:
+  - defaults
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+  - https://repo.anaconda.com/pkgs/msys2
+dependencies:
+  - python=3.10
+  - pytorch
+  - pytorch-cuda=12.4
+  - torchaudio
+  - torchvision
+  - conda-forge::python-duckdb
+  - numpy
+  - pandas
+  - notebook
+  - huggingface_hub
+  - ipywidgets
+  - tqdm
+  - conda-forge::sentencepiece-python
+  - conda-forge::pydantic
+  - pyarrow
+  - openai
+  - anaconda::scikit-learn
+  - matplotlib
+  - pillow
+  - conda-forge::tokenizers
+  - transformers
+prefix: C:\Users\mariu\anaconda3\envs\ble-env
