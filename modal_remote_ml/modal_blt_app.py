@@ -115,7 +115,7 @@ def check_environment():
     import openai
     from PIL import Image
     
-    return {
+    versions = {
         "python_version": sys.version,
         "torch_version": torch.__version__,
         "cuda_available": torch.cuda.is_available(),
@@ -128,3 +128,7 @@ def check_environment():
         "openai_version": openai.__version__,
         "pillow_version": Image.__version__
     }
+    print("Environment versions:")
+    for k, v in versions.items():
+        print(f"{k}: {v}")
+    return versions
