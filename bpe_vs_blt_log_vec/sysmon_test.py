@@ -322,12 +322,9 @@ def test_update_linformer(message_count=2):
             print(f"Message preview: {message[:100]}...")
             
             # Generate new Linformer embedding
-            start_time = time.time()
             linformer_emb = get_linformer_embedding(message)
-            process_time = time.time() - start_time
             
             print(f"Generated Linformer vector of shape: {linformer_emb.shape}")
-            print(f"Processing time: {process_time:.2f} seconds")
             
             try:
                 # Update only the Linformer vector
@@ -447,14 +444,27 @@ def add_openai_embeddings(batch_size=50):
                 input=batch_texts
             )
             
-            # Update database with new embeddings
-            for idx, embedding_data in zip(batch_ids, response.data):
-                embedding = embedding_data.embedding
-                con.execute("""
-                    UPDATE message_embeddings 
-                    SET embedding_openai = ?
-                    WHERE rowid = ?
-                """, [embedding, idx])
+            # Create a temporary table for bulk update
+            con.execute("CREATE TEMP TABLE IF NOT EXISTS temp_updates(embedding DOUBLE[], rowid BIGINT)")
+            
+            # Insert all updates into temp table
+            update_data = []
+            for embedding_data, idx in zip(response.data, batch_ids):
+                update_data.extend([embedding_data.embedding, idx])
+            
+            placeholders = ", ".join(["(?, ?)"] * len(batch_ids))
+            con.execute(f"INSERT INTO temp_updates SELECT * FROM (VALUES {placeholders})", update_data)
+            
+            # Perform bulk update
+            con.execute("""
+                UPDATE message_embeddings m 
+                SET embedding_openai = t.embedding 
+                FROM temp_updates t 
+                WHERE m.rowid = t.rowid
+            """)
+            
+            # Clean up temp table
+            con.execute("DROP TABLE temp_updates")
             
             # Small delay to avoid rate limits
             sleep(0.1)
@@ -565,14 +575,15 @@ if __name__ == "__main__":
     
     # Mode selection
     parser.add_argument('--mode', 
-                      choices=['vectorize', 'test', 'test_similarity', 'update_linformer', 'test_update_linformer'],
+                      choices=['vectorize', 'test', 'test_similarity', 'update_linformer', 'test_update_linformer', 'openai'],
                       default='test',
                       help='Operation mode:\n'
                            'vectorize: Process all messages and create embeddings\n'
                            'test: Run basic test on a small number of messages\n'
                            'test_similarity: Test similarity detection\n'
                            'update_linformer: Update Linformer vectors in database\n'
-                           'test_update_linformer: Test Linformer update on small dataset')
+                           'test_update_linformer: Test Linformer update on small dataset\n'
+                           'openai: Add OpenAI embeddings to database')
     
     # Processing parameters
     parser.add_argument('--batch_size', 
@@ -612,6 +623,9 @@ if __name__ == "__main__":
             ),
             'test_update_linformer': lambda: test_update_linformer(
                 message_count=args.message_count
+            ),
+            'openai': lambda: add_openai_embeddings(
+                batch_size=args.batch_size
             )
         }
         
