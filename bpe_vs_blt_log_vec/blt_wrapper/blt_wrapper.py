@@ -1,3 +1,4 @@
+# Configuration functions
 def load_config(config_path='../config.json'):
     """
     Load configuration from a JSON file.
@@ -48,6 +49,7 @@ def dl_blt_tokenizer(hf_token : str):
     print(f"Successfully downloaded tokenizer to: {output_path}")
 
 
+# Model initialization functions
 def load_blt_lib(blt_dir : str):
     import sys
     import os
@@ -64,6 +66,114 @@ def load_blt_lib(blt_dir : str):
 
     # Test the imports
     print("BLT imports successful!")
+
+
+def create_blt_model(checkpoint_path=None, model_dim=1024, verbose=True):
+    """
+    Create a BLT model with the specified configuration.
+
+    Args:
+        checkpoint_path (str, optional): Path to a model checkpoint to load.
+        model_dim (int): Model dimension. Default is 1024.
+        verbose (bool): Whether to print model details.
+
+    Returns:
+        ByteLatentTransformer: The initialized model.
+    """
+    from torch import nn
+    from bytelatent.model.utils import downsample
+    import torch
+    from bytelatent.model.blt import ByteLatentTransformer, ByteLatentTransformerArgs
+
+    # Calculate dependent parameters
+    n_heads = model_dim // 64  # Keep head_dim=64 constant
+    if verbose:
+        print(f"Initializing model with:")
+        print(f"- Model dimension: {model_dim}")
+        print(f"- Number of heads: {n_heads}")
+    
+    vocab_size = model_dim  # Set vocab_size to model_dim to get desired output dimension
+    max_seqlen = 10_000
+
+    args = ByteLatentTransformerArgs(
+        dim=model_dim,  # Model's internal dimension
+        n_layers=12,
+        n_heads=n_heads,  # Scales with dim to maintain head_dim=64
+        vocab_size=vocab_size,  # Set vocab_size to model_dim to get desired output dimension
+        patch_size=4,
+        patching_mode="bpe",
+        downsampling_by_pooling="avg",
+        max_seqlen=max_seqlen,
+        max_length=max_seqlen,
+        max_encoder_seq_length=max_seqlen,
+        weight_tying=True,
+        sliding_window=None,
+        cross_attn_encoder=False,
+        cross_attn_decoder=False,
+        cross_attn_k=4,
+        cross_attn_window_encoder=None,
+        cross_attn_window_decoder=None,
+        cross_attn_use_flex_attention=False,
+        encoder_hash_byte_group_size=[4],
+        encoder_hash_byte_group_vocab=256,
+        encoder_hash_byte_group_nb_functions=4,
+        encoder_enable_byte_ngrams=False,
+        data_loader_patching=False,
+        patching_threshold=0.5,
+        patching_threshold_add=0.0,
+        monotonicity=False,
+        max_patch_length=None,
+        init_std_factor="disabled",
+        init_base_std=0.02,
+        head_dim=64,  # Keep constant
+        rope_theta=10000.0,
+        use_rope=True,
+        dropout=0.0,
+        norm_eps=1e-5,
+        pm_size=0,
+        efficient_attn="fmha",
+        use_local_encoder_transformer=True,
+        patch_only_encoder=False,
+        patch_only_decoder=False,
+        share_encoder_decoder_emb=False,
+        cross_attn_nheads=n_heads,  # Scales with n_heads
+        cross_attn_all_layers_encoder=False,
+        cross_attn_all_layers_decoder=False,
+        cross_attn_init_by_pooling=False,
+        entropy_model_checkpoint_dir=None
+    )
+
+    try:
+        # Create model
+        if verbose:
+            print("Creating model...")
+        
+        if torch.cuda.is_available():
+            device = "cuda"
+            dtype = torch.float16
+        else:
+            device = "cpu"
+            dtype = torch.float32
+            
+        model = ByteLatentTransformer(args)
+        
+        # Add output projection to get desired dimension
+        model.output_proj = nn.Linear(vocab_size, model_dim).to(device=device, dtype=dtype)
+        
+        model = model.to(device=device, dtype=dtype)
+        model.device = device  # Store device for later use
+        
+        if verbose:
+            print(f"Model initialized successfully on {device}")
+            
+        return model
+        
+    except Exception as e:
+        if verbose:
+            print(f"Error creating model: {e}")
+            import traceback
+            traceback.print_exc()
+        raise
 
 
 def init_and_test_tokenizers():
@@ -228,114 +338,6 @@ def init_and_test_bpe_patcher(verbose=True):
         raise
 
 
-def create_blt_model(checkpoint_path=None, model_dim=1024, verbose=True):
-    """
-    Create a BLT model with the specified configuration.
-
-    Args:
-        checkpoint_path (str, optional): Path to a model checkpoint to load.
-        model_dim (int): Model dimension. Default is 1024.
-        verbose (bool): Whether to print model details.
-
-    Returns:
-        ByteLatentTransformer: The initialized model.
-    """
-    from torch import nn
-    from bytelatent.model.utils import downsample
-    import torch
-    from bytelatent.model.blt import ByteLatentTransformer, ByteLatentTransformerArgs
-
-    # Calculate dependent parameters
-    n_heads = model_dim // 64  # Keep head_dim=64 constant
-    if verbose:
-        print(f"Initializing model with:")
-        print(f"- Model dimension: {model_dim}")
-        print(f"- Number of heads: {n_heads}")
-    
-    vocab_size = model_dim  # Set vocab_size to model_dim to get desired output dimension
-    max_seqlen = 10_000
-
-    args = ByteLatentTransformerArgs(
-        dim=model_dim,  # Model's internal dimension
-        n_layers=12,
-        n_heads=n_heads,  # Scales with dim to maintain head_dim=64
-        vocab_size=vocab_size,  # Set vocab_size to model_dim to get desired output dimension
-        patch_size=4,
-        patching_mode="bpe",
-        downsampling_by_pooling="avg",
-        max_seqlen=max_seqlen,
-        max_length=max_seqlen,
-        max_encoder_seq_length=max_seqlen,
-        weight_tying=True,
-        sliding_window=None,
-        cross_attn_encoder=False,
-        cross_attn_decoder=False,
-        cross_attn_k=4,
-        cross_attn_window_encoder=None,
-        cross_attn_window_decoder=None,
-        cross_attn_use_flex_attention=False,
-        encoder_hash_byte_group_size=[4],
-        encoder_hash_byte_group_vocab=256,
-        encoder_hash_byte_group_nb_functions=4,
-        encoder_enable_byte_ngrams=False,
-        data_loader_patching=False,
-        patching_threshold=0.5,
-        patching_threshold_add=0.0,
-        monotonicity=False,
-        max_patch_length=None,
-        init_std_factor="disabled",
-        init_base_std=0.02,
-        head_dim=64,  # Keep constant
-        rope_theta=10000.0,
-        use_rope=True,
-        dropout=0.0,
-        norm_eps=1e-5,
-        pm_size=0,
-        efficient_attn="fmha",
-        use_local_encoder_transformer=True,
-        patch_only_encoder=False,
-        patch_only_decoder=False,
-        share_encoder_decoder_emb=False,
-        cross_attn_nheads=n_heads,  # Scales with n_heads
-        cross_attn_all_layers_encoder=False,
-        cross_attn_all_layers_decoder=False,
-        cross_attn_init_by_pooling=False,
-        entropy_model_checkpoint_dir=None
-    )
-
-    try:
-        # Create model
-        if verbose:
-            print("Creating model...")
-        
-        if torch.cuda.is_available():
-            device = "cuda"
-            dtype = torch.float16
-        else:
-            device = "cpu"
-            dtype = torch.float32
-            
-        model = ByteLatentTransformer(args)
-        
-        # Add output projection to get desired dimension
-        model.output_proj = nn.Linear(vocab_size, model_dim).to(device=device, dtype=dtype)
-        
-        model = model.to(device=device, dtype=dtype)
-        model.device = device  # Store device for later use
-        
-        if verbose:
-            print(f"Model initialized successfully on {device}")
-            
-        return model
-        
-    except Exception as e:
-        if verbose:
-            print(f"Error creating model: {e}")
-            import traceback
-            traceback.print_exc()
-        raise
-
-
 def init_and_test_embeddings(verbose=True):
     from torch import nn
     from bytelatent.model.utils import downsample
@@ -349,6 +351,98 @@ def init_and_test_embeddings(verbose=True):
         if verbose:
             print(f"Error in init_and_test_embeddings: {e}")
         raise
+
+
+# Core embedding functions
+def get_text_embedding(text, model, tokenizer_path):
+    """Get text embedding using BLT model"""
+    import torch
+    from transformers import AutoTokenizer
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    MAX_LENGTH = 700  # Maximum token length
+    
+    # Initialize tokenizer if not already done
+    if not hasattr(get_text_embedding, '_tokenizer'):
+        get_text_embedding._tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    
+    # Tokenize and prepare input
+    tokens = get_text_embedding._tokenizer.encode(
+        text,
+        max_length=MAX_LENGTH,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt"
+    )
+    
+    # Move to appropriate device
+    tokens = tokens.to(device)
+    
+    # Get embeddings
+    with torch.no_grad():
+        embeddings = model(tokens)
+        
+    return embeddings
+
+
+def get_linformer_embedding(message):
+    """
+    Convert text to a fixed-size vector using Linformer model.
+    This is the alternative to BLT vectorization.
+    
+    Args:
+        message (str): Input text to vectorize
+        
+    Returns:
+        numpy.ndarray: Vector representation of the text
+    """
+    from linformer import Linformer
+    import torch
+    from tokenizers import Tokenizer
+    import numpy as np
+    from pathlib import Path
+    
+    # Setup device and tokenizer
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = Tokenizer.from_file("log_tokenizer.json")
+    
+    # Initialize model if not already done
+    if not hasattr(get_linformer_embedding, 'linformer_model'):
+        print("\nInitializing Linformer model...")
+        get_linformer_embedding.linformer_model = Linformer(
+            dim=1024,              # Hidden dimension size
+            seq_len=10_000,        # Maximum sequence length
+            depth=12,              # Number of layers
+            heads=1024 // 64,      # Number of attention heads
+            k=128,                 # Projection dimension
+            one_kv_head=True,      # Use one key-value head
+            share_kv=True,         # Share key-value projections
+            dropout=0.1
+        )
+        get_linformer_embedding.linformer_model = get_linformer_embedding.linformer_model.to(device)
+        if torch.cuda.is_available():
+            print("Using GPU:", torch.cuda.get_device_name())
+        else:
+            print("Using CPU - No GPU available")
+    
+    MAX_LENGTH = 10_000  # Maximum token count
+
+    # Tokenize and prepare input
+    encoded = tokenizer.encode(message)
+    input_ids = encoded.ids
+    input_ids = input_ids[:MAX_LENGTH] if len(input_ids) > MAX_LENGTH else input_ids + [0] * (MAX_LENGTH - len(input_ids))
+    
+    # Create embeddings
+    embeddings = torch.nn.Embedding(30000, 1024).to(device)
+    input_tensor = embeddings(torch.tensor([input_ids], dtype=torch.long).to(device))
+    
+    # Get model output
+    with torch.no_grad():
+        outputs = get_linformer_embedding.linformer_model(input_tensor)
+        vector = outputs[:, -1, :].detach().squeeze()  # Remove batch dimension
+    
+    result = vector.cpu().numpy()
+    return result
 
 
 def process_text_to_embeddings(text, tokenizer_path, model, verbose=False):
@@ -368,15 +462,16 @@ def process_text_to_embeddings(text, tokenizer_path, model, verbose=False):
     import torch
     
     # Initialize tokenizer
-    blt_tokenizer = BltTokenizer(
-        bpe_delim=True,
-        bpe_tokenizer_path=str(tokenizer_path),
-        add_bos=True,
-        add_eos=True
-    )
+    if not hasattr(process_text_to_embeddings, '_tokenizer'):
+        process_text_to_embeddings._tokenizer = BltTokenizer(
+            bpe_delim=True,
+            bpe_tokenizer_path=str(tokenizer_path),
+            add_bos=True,
+            add_eos=True
+        )
     
     # Tokenize text
-    tokens = blt_tokenizer.encode(text)
+    tokens = process_text_to_embeddings._tokenizer.encode(text)
     if verbose:
         print(f"Tokens: {tokens}")
     
@@ -428,13 +523,14 @@ def get_model_hidden_states(text, model, tokenizer_path, verbose=True):
         print(f"Input text: '{text}'")
     
     # Initialize tokenizer and process text
-    blt_tokenizer = BltTokenizer(
-        bpe_delim=True,
-        bpe_tokenizer_path=str(tokenizer_path),
-        add_bos=True,
-        add_eos=True
-    )
-    tokens = blt_tokenizer.encode(text)
+    if not hasattr(get_model_hidden_states, '_tokenizer'):
+        get_model_hidden_states._tokenizer = BltTokenizer(
+            bpe_delim=True,
+            bpe_tokenizer_path=str(tokenizer_path),
+            add_bos=True,
+            add_eos=True
+        )
+    tokens = get_model_hidden_states._tokenizer.encode(text)
     tokens_tensor = torch.tensor(tokens).unsqueeze(0)
     device = getattr(model, 'device', 'cuda' if torch.cuda.is_available() else 'cpu')
     dtype = torch.float16 if device == "cuda" else torch.float32
@@ -471,89 +567,7 @@ def get_model_hidden_states(text, model, tokenizer_path, verbose=True):
     return outputs  # Return projected hidden states
 
 
-def get_text_embedding(text, model, tokenizer_path):
-    """
-    Get a 1024-dimensional embedding vector for the input text.
-    
-    Args:
-        text (str): Input text to vectorize
-        model: Initialized BLT model
-        tokenizer_path (Path): Path to the tokenizer model
-    
-    Returns:
-        torch.Tensor: 1024-dimensional embedding vector
-    """
-    # Get hidden states (last hidden state)
-    hidden_states = get_model_hidden_states(text, model, tokenizer_path, verbose=False)
-    
-    # Average across sequence dimension to get a single vector
-    embedding = hidden_states.mean(dim=1)
-    
-    return embedding.squeeze()
-
-
-def get_linformer_embedding(text, tokenizer_path):
-    """
-    Get a 1024-dimensional embedding vector using Linformer with BPE tokenization.
-    
-    Args:
-        text (str): Input text to vectorize
-        tokenizer_path (Path): Path to the tokenizer model
-    
-    Returns:
-        torch.Tensor: 1024-dimensional embedding vector
-    """
-    from bytelatent.tokenizers.sentence_piece_tokenizer import SentencePieceTokenizer
-    from linformer import Linformer
-    import torch
-    import torch.nn as nn
-    
-    # Initialize BPE tokenizer
-    bpe_tokenizer = SentencePieceTokenizer(model_path=str(tokenizer_path))
-    tokens = bpe_tokenizer.encode(text)
-    
-    # Set device
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    dtype = torch.float16 if device == 'cuda' else torch.float32
-    
-    # Create tensors on the correct device
-    tokens_tensor = torch.tensor(tokens, device=device).unsqueeze(0)
-    
-    # Initialize Linformer model
-    config = {
-        'input_size': 10_000,  # Dynamic sequence length
-        'channels': 1024,  # Match BLT dimension
-        'dim_k': 128,     # Reduced attention dimension
-        'dim_ff': 2048,   # Feed-forward dimension
-        'nhead': 16,      # Match BLT heads
-        'depth': 12,      # Match BLT layers
-        'dropout': 0.1
-    }
-    
-    # Create Linformer model and move to device
-    model = Linformer(
-        dim=config['channels'],
-        seq_len=config['input_size'],
-        depth=config['depth'],
-        heads=config['nhead'],
-        k=config['dim_k'],
-        one_kv_head=False,  # Enable multi-head attention
-        share_kv=False      # Don't share key/value projections
-    ).to(device=device, dtype=dtype)
-    
-    # Create input embeddings on device
-    embedding = nn.Embedding(32000, config['channels']).to(device=device, dtype=dtype)
-    embedded = embedding(tokens_tensor)
-    
-    # Get model output
-    with torch.no_grad():
-        output = model(embedded)
-        # Average across sequence dimension
-        embedding = output.mean(dim=1)
-    
-    return embedding.squeeze()
-
-
+# Testing functions
 def make_blt_embeddings(verbose=False):
     """
     Test function to create and analyze BLT embeddings.
@@ -673,14 +687,14 @@ def main(config_path='../config.json'):
     
     # Linformer Embeddings
     print("\n2. Linformer Embeddings:")
-    linformer_embedding = get_linformer_embedding(test_text, tokenizer_path)
+    linformer_embedding = get_linformer_embedding(test_text)
     print(f"Shape: {linformer_embedding.shape}")
     print(f"Mean: {linformer_embedding.mean().item():.4f}")
     print(f"Std: {linformer_embedding.std().item():.4f}")
     
     # Compute cosine similarity
     cos = torch.nn.CosineSimilarity(dim=0)
-    similarity = cos(blt_embedding, linformer_embedding)
+    similarity = cos(blt_embedding, torch.tensor(linformer_embedding))
     print(f"\nCosine Similarity between embeddings: {similarity.item():.4f}")
 
 if __name__ == "__main__":
