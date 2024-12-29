@@ -117,7 +117,7 @@ image = (modal.Image.debian_slim()
         "synchronicity==0.9.8",
         "toml==0.10.2",
         "protobuf==5.29.2",
-        "huggingface_hub",  # Added for downloading tokenizer
+        "huggingface_hub"  # Added for downloading tokenizer
     ])
     .run_function(setup_environment, secrets=[secret])
 )
@@ -168,10 +168,11 @@ def check_environment():
 
 # Function to process embeddings with BLT
 @app.function(
-    gpu="any", 
-    image=image, 
+    gpu="A10G",
+    image=image,
     volumes={MOUNT_PATH: volume},
-    secrets=[secret]
+    secrets=[secret],
+    timeout=3600  # 1 hour timeout
 )
 def process_blt_embeddings():
     import sys
@@ -179,13 +180,13 @@ def process_blt_embeddings():
     import requests
     from pathlib import Path
     import numpy as np
-    from tqdm import tqdm
+    import time
     
     # Add paths
     sys.path.append('/root/infosec_ml_rnd')
     sys.path.append('/root/infosec_ml_rnd/bpe_vs_blt_log_vec')
     
-    from blt_wrapper.blt_wrapper import create_blt_model, get_text_embedding, load_blt_lib
+    from blt_wrapper.blt_wrapper import create_blt_model, process_text_to_embeddings, load_blt_lib
     
     # Initialize BLT library
     blt_dir = '/root/infosec_ml_rnd/bpe_vs_blt_log_vec/blt'
@@ -202,112 +203,112 @@ def process_blt_embeddings():
     
     # Initialize BLT model
     print("\033[92mInitializing BLT model...\033[0m")
+    
+    # Print GPU and CPU info
+    import subprocess
+    try:
+        gpu_info = subprocess.check_output("nvidia-smi --query-gpu=gpu_name --format=csv,noheader", shell=True).decode()
+        print(f"GPU: {gpu_info.strip()}")
+    except:
+        print("No GPU info available")
+        
+    try:
+        cpu_info = subprocess.check_output("cat /proc/cpuinfo | grep 'model name' | uniq", shell=True).decode()
+        print(f"CPU: {cpu_info.split(':')[1].strip()}")
+    except:
+        print("No CPU info available")
+    
     model = create_blt_model()
-    tokenizer_path = "/root/infosec_ml_rnd/bpe_vs_blt_log_vec/tokenizers/original"
+    tokenizer_path = "/root/infosec_ml_rnd/bpe_vs_blt_log_vec/tokenizers/tokenizer.model"
     
     # Connect to database
     conn = duckdb.connect(db_path)
     
-    # Get total count for progress bar
+    # Create embedding column if it doesn't exist
+    conn.execute("""
+    ALTER TABLE message_embeddings 
+    ADD COLUMN IF NOT EXISTS embedding_blt DOUBLE[];
+    """)
+    
+    # Get total count
     total_count = conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0]
     
     # Process in batches
     batch_size = 100
     offset = 0
+    processed = 0
+    shape_printed = False
+    time_printed = False
+    start_time = None
+    db_start_time = None
     
-    with tqdm(total=total_count, desc="Processing embeddings", colour='green') as pbar:
-        while True:
-            # Get batch of messages
-            query = f"""
+    while offset < total_count:
+        # Get batch of messages
+        messages = conn.execute("""
             SELECT message 
             FROM message_embeddings 
-            LIMIT {batch_size} 
-            OFFSET {offset}
-            """
-            messages = conn.execute(query).fetchall()
+            ORDER BY message 
+            LIMIT ? OFFSET ?
+        """, [batch_size, offset]).fetchall()
+        
+        if not messages:
+            break
             
-            if not messages:
-                break
-                
-            # Process batch
-            new_embeddings = []
-            for msg, in messages:
-                embedding = get_text_embedding(msg, model, tokenizer_path)
-                # Convert to numpy array
-                embedding = embedding.cpu().numpy().squeeze()
-                new_embeddings.append(embedding)
+        # Start timing for first batch
+        if processed == 0:
+            start_time = time.time()
             
-            # Update database
-            for i, (msg,) in enumerate(messages):
-                update_query = """
-                UPDATE message_embeddings 
-                SET embedding_blt = ?
-                WHERE message = ?
-                """
-                conn.execute(update_query, [new_embeddings[i], msg])
+        # Process batch
+        new_embeddings = []
+        for msg, in messages:
+            embedding = process_text_to_embeddings(
+                text=msg,
+                tokenizer_path=tokenizer_path,
+                model=model,
+                verbose=False
+            )
+            # Print shape only once at the start
+            if not shape_printed:
+                print("\nFinal embeddings shape:", embedding['final'].shape)
+                shape_printed = True
             
-            offset += batch_size
-            pbar.update(len(messages))
+            # Convert to numpy array and get final token embedding
+            embedding = embedding['final'].cpu().numpy()
+            embedding = embedding[0, -1, :]  # Get last hidden state
+            new_embeddings.append(embedding)
+
+        # Print vectorization time for first batch
+        if not time_printed and start_time is not None:
+            vectorization_time = time.time() - start_time
+            print(f"\nVectorization took: {vectorization_time:.2f} seconds for {len(messages)} messages")
+            print(f"Average time per message: {vectorization_time/len(messages):.2f} seconds")
+            db_start_time = time.time()
+            time_printed = True
+
+        # Update database
+        update_query = """
+        UPDATE message_embeddings 
+        SET embedding_blt = ?
+        WHERE message = ?
+        """
+        # Start transaction for batch update
+        conn.execute("BEGIN TRANSACTION")
+        for i, (msg,) in enumerate(messages):
+            embedding_list = new_embeddings[i].tolist()
+            conn.execute(update_query, [embedding_list, msg])
+        conn.execute("COMMIT")
+            
+        # Print database update time for first batch
+        if db_start_time is not None:
+            db_time = time.time() - db_start_time
+            print(f"Database update took: {db_time:.2f} seconds for {len(messages)} messages")
+            print(f"Average time per update: {db_time/len(messages):.2f} seconds")
+            db_start_time = None
+        
+        processed += len(messages)
+        print(f"Progress: {(processed/total_count)*100:.2f}% ({processed}/{total_count})")
+        offset += batch_size
     
     conn.close()
     volume.commit()
     return "Completed BLT embedding processing"
-
-# Function to test BLT embeddings
-@app.function(gpu="any", image=image)
-def test_blt_embeddings():
-    import sys
-    import torch
-    from pathlib import Path
-    
-    # Add paths
-    sys.path.append('/root/infosec_ml_rnd')
-    sys.path.append('/root/infosec_ml_rnd/bpe_vs_blt_log_vec')
-    
-    from blt_wrapper.blt_wrapper import create_blt_model, process_text_to_embeddings, load_blt_lib
-    
-    # Initialize BLT library
-    blt_dir = '/root/infosec_ml_rnd/bpe_vs_blt_log_vec/blt'
-    load_blt_lib(blt_dir)
-    
-    # Initialize model and tokenizer
-    model = create_blt_model()
-    tokenizer_path = "/root/infosec_ml_rnd/bpe_vs_blt_log_vec/tokenizers/original"
-    
-    # Test text
-    test_text = "Hello, this is a test."
-    
-    # Get embeddings
-    embeddings = process_text_to_embeddings(
-        text=test_text,
-        tokenizer_path=tokenizer_path,
-        model=model,
-        verbose=False
-    )
-    
-    # Print analysis
-    print("\n=== BLT Embedding Analysis ===")
-    print(f"\nInput Text: \"{test_text}\"")
-    
-    for name, embedding in embeddings.items():
-        print(f"\n=== {name.upper()} Embeddings ===")
-        print(f"Shape: {embedding.shape}")
-        print(f"• Batch size: {embedding.shape[0]}")
-        print(f"• Sequence length: {embedding.shape[1]}")
-        print(f"• Embedding dimension: {embedding.shape[2]}")
-        params = embedding.shape[1] * embedding.shape[2]
-        print(f"• Parameters: {params:,}")
-        total_params = sum(e.shape[1] * e.shape[2] for e in embeddings.values())
-        print(f"• Share of total: {params/total_params:.2%}")
-        
-        print("\nStatistics:")
-        print(f"• Mean: {embedding.float().mean().item():.3f}")
-        print(f"• Std: {embedding.float().std().item():.3f}")
-        print(f"• Min: {embedding.float().min().item():.3f}")
-        print(f"• Max: {embedding.float().max().item():.3f}")
-    
-    print("\n=== Overall Statistics ===")
-    total_params = sum(e.shape[1] * e.shape[2] for e in embeddings.values())
-    print(f"Total parameters across all embeddings: {total_params:,}")
-    
-    return embeddings
