@@ -30,6 +30,13 @@ def load_config(config_path='../config.json'):
 
 
 def dl_blt_tokenizer(hf_token : str):
+    """
+    Download the Llama2 tokenizer from Huggingface Hub.
+    You can also use a different copy.
+    
+    Args:
+        hf_token (str): Huggingface token for downloading the tokenizer
+    """
 
     from huggingface_hub import hf_hub_download
 
@@ -51,6 +58,13 @@ def dl_blt_tokenizer(hf_token : str):
 
 # Model initialization functions
 def load_blt_lib(blt_dir : str):
+    """
+        Load the BLT library from the specified directory.
+        
+        Args:
+            blt_dir (str): Path to the BLT directory
+    """
+
     import sys
     import os
     from pathlib import Path
@@ -68,7 +82,7 @@ def load_blt_lib(blt_dir : str):
     print("BLT imports successful!")
 
 
-def create_blt_model(checkpoint_path=None, model_dim=1024, verbose=True):
+def create_blt_model(checkpoint_path=None, model_dim=1024, verbose=True, mode="bpe"):
     """
     Create a BLT model with the specified configuration.
 
@@ -101,7 +115,7 @@ def create_blt_model(checkpoint_path=None, model_dim=1024, verbose=True):
         n_heads=n_heads,  # Scales with dim to maintain head_dim=64
         vocab_size=vocab_size,  # Set vocab_size to model_dim to get desired output dimension
         patch_size=4,
-        patching_mode="bpe",
+        patching_mode=mode,
         downsampling_by_pooling="avg",
         max_seqlen=max_seqlen,
         max_length=max_seqlen,
@@ -177,6 +191,12 @@ def create_blt_model(checkpoint_path=None, model_dim=1024, verbose=True):
 
 
 def init_and_test_tokenizers():
+    """
+    Initialize and test tokenizers for BPE and BLT.
+    A demo function / integration test
+    """
+
+
     from pathlib import Path
     from bytelatent.tokenizers.blt_tokenizer import BltTokenizer
     from bytelatent.tokenizers.sentence_piece_tokenizer import SentencePieceTokenizer
@@ -213,6 +233,11 @@ def init_and_test_tokenizers():
 
 
 def init_and_test_byte_patcher(verbose=True):
+    """
+    Initialize and test the byte patcher.
+    A demo function / integration test
+    """
+
     from bytelatent.data.patcher import Patcher, PatcherArgs
     from bytelatent.model.local_models import LocalEncoder
     import numpy as np
@@ -271,6 +296,11 @@ def init_and_test_byte_patcher(verbose=True):
 
 
 def init_and_test_bpe_patcher(verbose=True):
+    """
+    Initialize and test the BPE patcher.
+    A demo function / integration test
+    """
+
     from bytelatent.data.patcher import Patcher, PatcherArgs
     import torch
 
@@ -339,6 +369,11 @@ def init_and_test_bpe_patcher(verbose=True):
 
 
 def init_and_test_embeddings(verbose=True):
+    """
+    Initialize and test BLT embeddings.
+    A demo function / integration test
+    """
+
     from torch import nn
     from bytelatent.model.utils import downsample
     import torch
@@ -352,6 +387,12 @@ def init_and_test_embeddings(verbose=True):
             print(f"Error in init_and_test_embeddings: {e}")
         raise
 
+
+def get_blt_embedding(text, model, tokenizer_path):
+    """Get BLT embedding for a given text
+    Stub function with better name. See below.
+    """
+    process_text_to_embeddings(text, model, tokenizer_path)
 
 # Core embedding functions
 def get_text_embedding(text, model, tokenizer_path):
@@ -456,7 +497,7 @@ def process_text_to_embeddings(text, tokenizer_path, model, verbose=False):
         verbose (bool): Whether to print processing details
     
     Returns:
-        dict: Dictionary of different embedding types
+        torch.Tensor: Final hidden state (last token's embedding)
     """
     from bytelatent.tokenizers.blt_tokenizer import BltTokenizer
     import torch
@@ -482,24 +523,13 @@ def process_text_to_embeddings(text, tokenizer_path, model, verbose=False):
     
     # Generate embeddings
     with torch.no_grad():
-        # Get token embeddings from the model's forward pass
-        embeddings = model(tokens_tensor)
+        # Get embeddings from model forward pass
+        output = model(tokens_tensor)
         
-        # Extract the hidden states
-        if hasattr(embeddings, 'hidden_states'):
-            token_embeddings = embeddings.hidden_states[-1]  # Last layer
-        else:
-            token_embeddings = embeddings  # Assume it's the final embeddings
+        # Get the final hidden state (last token's embedding)
+        final_hidden = output[:, -1, :]  # Shape: [batch_size, hidden_dim]
             
-        # For position and final embeddings, use the same since we don't have access to intermediates
-        position_embeddings = token_embeddings.clone()  # Clone to avoid modification
-        final_embeddings = token_embeddings
-    
-    return {
-        'token': token_embeddings,
-        'position': position_embeddings,
-        'final': final_embeddings
-    }
+    return final_hidden
 
 
 def get_model_hidden_states(text, model, tokenizer_path, verbose=True):
@@ -608,42 +638,38 @@ def make_blt_embeddings(verbose=False):
     print("\n=== BLT Embedding Analysis ===")
     print(f"\nInput Text: \"{test_text}\"")
     
-    for name, embedding in embeddings.items():
-        print(f"\n=== {name.upper()} Embeddings ===")
-        print(f"Shape: {embedding.shape}")
-        print(f"• Batch size: {embedding.shape[0]}")
-        print(f"• Sequence length: {embedding.shape[1]}")
-        print(f"• Embedding dimension: {embedding.shape[2]}")
-        params = embedding.shape[1] * embedding.shape[2]
-        print(f"• Parameters: {params:,}")
-        total_params = sum(e.shape[1] * e.shape[2] for e in embeddings.values())
-        print(f"• Share of total: {params/total_params:.2%}")
+    print(f"\nFinal Hidden State Embedding:")
+    print(f"Shape: {embeddings.shape}")
+    print(f"• Batch size: {embeddings.shape[0]}")
+    print(f"• Embedding dimension: {embeddings.shape[1]}")
+    params = embeddings.shape[0] * embeddings.shape[1]
+    print(f"• Parameters: {params:,}")
+    
+    if verbose:
+        print("\nTensor Properties:")
+        print(f"• Device: {embeddings.device}")
+        print(f"• Dtype: {embeddings.dtype}")
         
-        if verbose:
-            print("\nTensor Properties:")
-            print(f"• Device: {embedding.device}")
-            print(f"• Dtype: {embedding.dtype}")
-        
-        print("\nStatistics:")
-        print(f"• Mean: {embedding.float().mean().item():.3f}")
-        print(f"• Std: {embedding.float().std().item():.3f}")
-        print(f"• Min: {embedding.float().min().item():.3f}")
-        print(f"• Max: {embedding.float().max().item():.3f}")
-        
-        if verbose:
-            print("\nValue Distribution:")
-            percentiles = [0, 25, 50, 75, 100]
-            for p in percentiles:
-                val = torch.quantile(embedding.float(), p/100)
-                print(f"• {p}th percentile: {val.item():.3f}")
+    print("\nStatistics:")
+    print(f"• Mean: {embeddings.float().mean().item():.3f}")
+    print(f"• Std: {embeddings.float().std().item():.3f}")
+    print(f"• Min: {embeddings.float().min().item():.3f}")
+    print(f"• Max: {embeddings.float().max().item():.3f}")
+    
+    if verbose:
+        print("\nValue Distribution:")
+        percentiles = [0, 25, 50, 75, 100]
+        for p in percentiles:
+            val = torch.quantile(embeddings.float(), p/100)
+            print(f"• {p}th percentile: {val.item():.3f}")
     
     print("\n=== Overall Statistics ===")
-    total_params = sum(e.shape[1] * e.shape[2] for e in embeddings.values())
+    total_params = embeddings.shape[0] * embeddings.shape[1]
     print(f"Total parameters across all embeddings: {total_params:,}")
     
     if verbose:
         print("\nMemory Usage:")
-        memory_bytes = sum(e.element_size() * e.nelement() for e in embeddings.values())
+        memory_bytes = embeddings.element_size() * embeddings.nelement()
         print(f"• Total memory: {memory_bytes/1024/1024:.2f} MB")
         
     return embeddings

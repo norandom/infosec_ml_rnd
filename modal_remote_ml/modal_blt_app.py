@@ -1,3 +1,8 @@
+"""
+https://www.because-security.com/blog/serverless-gpu-computing-with-modal-for-custom-models
+"""
+
+
 import modal
 import os
 import subprocess
@@ -186,7 +191,7 @@ def process_blt_embeddings():
     sys.path.append('/root/infosec_ml_rnd')
     sys.path.append('/root/infosec_ml_rnd/bpe_vs_blt_log_vec')
     
-    from blt_wrapper.blt_wrapper import create_blt_model, process_text_to_embeddings, load_blt_lib
+    from blt_wrapper.blt_wrapper import create_blt_model, get_blt_embedding, load_blt_lib
     
     # Initialize BLT library
     blt_dir = '/root/infosec_ml_rnd/bpe_vs_blt_log_vec/blt'
@@ -261,7 +266,7 @@ def process_blt_embeddings():
         # Process batch
         new_embeddings = []
         for msg, in messages:
-            embedding = process_text_to_embeddings(
+            embedding = get_blt_embedding(
                 text=msg,
                 tokenizer_path=tokenizer_path,
                 model=model,
